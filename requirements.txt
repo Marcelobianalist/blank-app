@@ -1,7 +1,4 @@
 streamlit
 pandas
-sentence-transformers
-scikit-learn
-numpy
 thefuzz
 python-levenshtein
