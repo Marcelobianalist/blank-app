@@ -21,21 +21,20 @@ def load_model():
 
 @st.cache_data
 def load_and_prepare_data():
-    """Carga los datos de la CIE-10 desde una URL en formato JSON y los prepara."""
-    # <--- CAMBIO 1: Nueva URL apuntando a un archivo JSON estable.
-    DATA_URL = "https://raw.githubusercontent.com/juan-g/cie10/master/cie10.json"
+    """Carga los datos de la CIE-10 desde la nueva URL en formato JSON y los prepara."""
+    # <--- CAMBIO 1: Nueva y definitiva URL del archivo JSON.
+    DATA_URL = "https://raw.githubusercontent.com/verasativa/CIE-10/refs/heads/master/codes.json"
     
     with st.spinner("Cargando catálogo CIE-10 (JSON) desde la web..."):
         try:
-            # <--- CAMBIO 2: Usamos pd.read_json para leer el archivo.
             df = pd.read_json(DATA_URL)
         except Exception as e:
             st.error(f"Error al cargar los datos desde la fuente online: {e}")
             st.info("Por favor, revise su conexión a internet. Si el problema persiste, la fuente de datos puede estar temporalmente inaccesible.")
             st.stop()
     
-    # <--- CAMBIO 3: Mantenemos el renombrado de columnas para compatibilidad.
-    df.rename(columns={'clave': 'code', 'descripcion_es': 'description'}, inplace=True)
+    # <--- CAMBIO 2: ¡Ya no se necesita renombrar columnas! El formato es perfecto.
+    # La línea df.rename(...) ha sido eliminada.
         
     # Limpieza básica
     df.dropna(subset=['code', 'description'], inplace=True)
@@ -60,8 +59,7 @@ def get_coding_guidance(code):
     if not code: return ""
     chapter = code[0].upper()
     guidance = []
-
-    # Se añade una comprobación para evitar errores con códigos malformados
+    
     is_neoplasia_range = (
         chapter == 'D' and 
         len(code) > 2 and 
