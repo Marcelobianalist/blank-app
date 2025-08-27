@@ -21,20 +21,20 @@ def load_model():
 
 @st.cache_data
 def load_and_prepare_data():
-    """Carga los datos de la CIE-10 desde una URL y los prepara."""
-    # <--- CAMBIO 1: Nueva URL del archivo de datos. Esta está activa.
-    DATA_URL = "https://raw.githubusercontent.com/esss-cancerdemama/cie10/master/cie10.csv"
+    """Carga los datos de la CIE-10 desde una URL en formato JSON y los prepara."""
+    # <--- CAMBIO 1: Nueva URL apuntando a un archivo JSON estable.
+    DATA_URL = "https://raw.githubusercontent.com/juan-g/cie10/master/cie10.json"
     
-    with st.spinner("Cargando catálogo CIE-10 desde la web..."):
+    with st.spinner("Cargando catálogo CIE-10 (JSON) desde la web..."):
         try:
-            df = pd.read_csv(DATA_URL)
+            # <--- CAMBIO 2: Usamos pd.read_json para leer el archivo.
+            df = pd.read_json(DATA_URL)
         except Exception as e:
             st.error(f"Error al cargar los datos desde la fuente online: {e}")
             st.info("Por favor, revise su conexión a internet. Si el problema persiste, la fuente de datos puede estar temporalmente inaccesible.")
             st.stop()
     
-    # <--- CAMBIO 2: Renombrar columnas para que coincidan con el resto del código.
-    # El nuevo archivo usa 'clave' y 'descripcion_es'. Los renombramos a 'code' y 'description'.
+    # <--- CAMBIO 3: Mantenemos el renombrado de columnas para compatibilidad.
     df.rename(columns={'clave': 'code', 'descripcion_es': 'description'}, inplace=True)
         
     # Limpieza básica
@@ -54,13 +54,23 @@ def create_embeddings(_model, descriptions):
         embeddings = _model.encode(descriptions, convert_to_tensor=True, show_progress_bar=True)
     return embeddings.cpu().numpy()
 
-# --- Función de Orientación para Codificación (sin cambios) ---
+# --- Función de Orientación para Codificación ---
 def get_coding_guidance(code):
     """Proporciona orientación específica basada en el capítulo de la CIE-10."""
+    if not code: return ""
     chapter = code[0].upper()
     guidance = []
+
+    # Se añade una comprobación para evitar errores con códigos malformados
+    is_neoplasia_range = (
+        chapter == 'D' and 
+        len(code) > 2 and 
+        code[1:3].isdigit() and 
+        0 <= int(code[1:3]) <= 48
+    )
+
     if chapter in ['A', 'B']: guidance.append("**Guía:** Para enfermedades infecciosas, considere codificar también el organismo causal si la CIE-10 lo indica.")
-    elif chapter == 'C' or (chapter == 'D' and len(code) > 1 and code[1:3].isdigit() and int(code[1:3]) <= 48): guidance.append("**Guía:** Para neoplasias, especifique el comportamiento (maligno, benigno, in situ) y la localización. Use códigos de la sección Z para historial personal de neoplasia.")
+    elif chapter == 'C' or is_neoplasia_range: guidance.append("**Guía:** Para neoplasias, especifique el comportamiento (maligno, benigno, in situ) y la localización. Use códigos de la sección Z para historial personal de neoplasia.")
     elif chapter == 'F': guidance.append("**Guía:** Para trastornos mentales, sea lo más específico posible. Considere el estado (ej. en remisión), la severidad y si es un episodio único o recurrente.")
     elif chapter == 'I': guidance.append("**Guía:** Para enfermedades circulatorias, especifique la cronicidad (agudo vs. crónico). Para hipertensión, considere si hay relación causal con enfermedades renales o cardíacas.")
     elif chapter == 'J': guidance.append("**Guía:** Para enfermedades respiratorias, distinga entre agudo y crónico. Si hay una infección, codifique el organismo si es conocido.")
@@ -71,7 +81,7 @@ def get_coding_guidance(code):
     else: guidance.append("**Guía General:** Revise la documentación clínica para asegurar que el código seleccionado refleje con la máxima precisión el diagnóstico. Considere si se necesitan códigos adicionales para manifestaciones o comorbilidades.")
     return "\n".join(guidance)
 
-# --- Interfaz Principal de la Aplicación (sin cambios) ---
+# --- Interfaz Principal de la Aplicación ---
 st.title("🩺 Asistente Inteligente de Codificación CIE-10")
 st.markdown("""
 Esta herramienta utiliza un modelo de lenguaje para recomendar los códigos de diagnóstico CIE-10 más probables basados en una descripción clínica.
