@@ -5,9 +5,9 @@ from thefuzz import process
 
 # --- Configuración de la Página ---
 st.set_page_config(
-    page_title="Workbench CIE-10",
-    page_icon="🧠",
-    layout="centered" # El diseño centrado es mejor para este flujo
+    page_title="Asistente de Codificación CIE-10",
+    page_icon="💡",
+    layout="wide"
 )
 
 # --- Funciones de Lógica y Carga de Datos (con Caché) ---
@@ -20,39 +20,64 @@ def normalize_text(text: str) -> str:
 
 @st.cache_data
 def load_and_prepare_data():
-    """Carga, procesa y optimiza el catálogo CIE-10 una sola vez."""
+    """Carga, procesa y enriquece el catálogo CIE-10 con sinónimos y áreas clínicas."""
     DATA_URL = "https://raw.githubusercontent.com/verasativa/CIE-10/refs/heads/master/codes.json"
     with st.spinner("Cargando y optimizando el catálogo CIE-10..."):
         df = pd.read_json(DATA_URL).dropna(subset=['code', 'description'])
-        df['code_4d'] = df['code'].str.replace('.', '', regex=False).apply(
-            lambda x: x.ljust(4, 'X') if len(x) == 3 else x
-        ).str.slice(0, 4)
-        df['desc_norm'] = df['description'].apply(normalize_text)
+
+        # --- MEJORA: DICCIONARIO DE SINÓNIMOS ---
+        synonym_map = {
+            "dolor de cabeza": "cefalea", "infarto": "isquemia miocardio",
+            "cancer": "neoplasia maligna tumor", "corazon": "cardiaco cardiaca",
+            "riñon": "renal", "pulmon": "neumo respiratorio", "azucar": "diabetes mellitus",
+            "presion alta": "hipertension", "ataque cerebral": "accidente cerebrovascular acv",
+            "hueso roto": "fractura"
+        }
+        
+        def expand_with_synonyms(text):
+            normalized_text = normalize_text(text)
+            for key, value in synonym_map.items():
+                if key in normalized_text:
+                    normalized_text += f" {value}"
+            return normalized_text
+
+        df['code_4d'] = df['code'].str.replace('.', '', regex=False).apply(lambda x: x.ljust(4, 'X') if len(x) == 3 else x).str.slice(0, 4)
+        df['search_field'] = df['description'].apply(expand_with_synonyms)
         df['block_code'] = df['code'].str[:3]
 
-        chapters_dict = {
-            'A': "I. Infecciosas y parasitarias", 'B': "I. Infecciosas y parasitarias",
-            'C': "II. Neoplasias (tumores)", 'D': "III-IV. Sangre / Endocrinas", 
-            'E': "III-IV. Sangre / Endocrinas", 'F': "V. Trastornos mentales",
-            'G': "VI. Sistema nervioso", 'H': "VII-VIII. Ojo y oído", 'I': "IX. Circulatorio",
-            'J': "X. Respiratorio", 'K': "XI. Digestivo", 'L': "XII. Piel",
-            'M': "XIII. Musculoesquelético", 'N': "XIV. Genitourinario",
-            'O': "XV. Embarazo y parto", 'P': "XVI. Perinatales",
-            'Q': "XVII. Malformaciones congénitas", 'R': "XVIII. Síntomas y signos",
-            'S': "XIX. Traumatismos y envenenamientos", 'T': "XIX. Traumatismos y envenenamientos",
-            'V': "XX. Causas externas", 'W': "XX. Causas externas", 'X': "XX. Causas externas", 'Y': "XX. Causas externas",
-            'Z': "XXI. Factores que influyen en la salud", 'U': "XXII. Códigos para propósitos especiales"
+        # --- MEJORA: FILTRO POR ÁREA CLÍNICA ---
+        clinical_area_map = {
+            "Infecciosas y Parasitarias": ['A', 'B'],
+            "Oncología (Neoplasias)": ['C', 'D'],
+            "Endocrinología y Metabolismo": ['E'],
+            "Salud Mental y Comportamiento": ['F'],
+            "Neurología": ['G'],
+            "Oftalmología y Otorrinolaringología": ['H'],
+            "Cardiología y Sist. Circulatorio": ['I'],
+            "Neumología y Sist. Respiratorio": ['J'],
+            "Gastroenterología y Sist. Digestivo": ['K'],
+            "Dermatología": ['L'],
+            "Traumatología y Sist. Musculoesquelético": ['M'],
+            "Nefrología y Sist. Genitourinario": ['N'],
+            "Ginecología y Obstetricia": ['O'],
+            "Pediatría y Perinatología": ['P'],
+            "Genética y Malformaciones": ['Q'],
+            "Síntomas y Hallazgos Anormales": ['R'],
+            "Traumatismos, Envenenamientos y Causas Externas": ['S', 'T', 'V', 'W', 'X', 'Y'],
+            "Factores de Salud y Contacto con Servicios": ['Z'],
+            "Códigos Especiales": ['U']
         }
-        df['chapter_letter'] = df['code'].str[0]
-        df['chapter_desc'] = df['chapter_letter'].map(chapters_dict).fillna("Capítulo no especificado")
         
-        # Obtener descripción del bloque para contexto
+        letter_to_area = {letter: area for area, letters in clinical_area_map.items() for letter in letters}
+        df['chapter_letter'] = df['code'].str[0]
+        df['clinical_area'] = df['chapter_letter'].map(letter_to_area).fillna("Área no especificada")
+        
         block_descriptions = df.groupby('block_code')['description'].first()
         df['block_desc'] = df['block_code'].map(block_descriptions)
     return df
 
 def get_coding_guidance(code):
-    """Genera consejos de codificación contextuales y visuales."""
+    # (Función sin cambios, se mantiene igual que la versión anterior)
     if not code: return "", "info"
     chapter = code[0].upper()
     if chapter in ['S', 'T']:
@@ -67,82 +92,90 @@ def get_coding_guidance(code):
         return "💡 **Consejo:** Para neoplasias, es crucial especificar la localización y el comportamiento (maligno, benigno, etc.).", "info"
     return "✅ **Guía General:** Asegúrese de que este código sea el más específico posible según la documentación clínica.", "success"
 
-# --- Funciones de Renderizado de la UI ---
+# --- Inicialización de la Aplicación ---
+st.title("💡 Asistente de Codificación CIE-10")
+st.markdown("Busque con sinónimos o explore por área clínica para encontrar el código correcto.")
 
-def render_search_view():
-    """Muestra la interfaz de búsqueda principal."""
-    st.header("🔍 Búsqueda Inteligente CIE-10")
-    search_query = st.text_input("Escriba un término o código para iniciar el análisis:", placeholder="Ej: diabetes, infarto, F322...")
+df = load_and_prepare_data()
 
+if 'selected_code_4d' not in st.session_state:
+    st.session_state.selected_code_4d = None
+
+# --- Panel de Detalles en la Barra Lateral (Siempre visible) ---
+with st.sidebar:
+    st.header("📋 Panel de Análisis")
+    if st.session_state.selected_code_4d:
+        row = df[df['code_4d'] == st.session_state.selected_code_4d].iloc[0]
+        
+        st.subheader(f"Código: {row['code_4d']}")
+        st.markdown(f"**{row['description']}**")
+        st.divider()
+
+        st.markdown(f"**Área Clínica:** {row['clinical_area']}")
+        st.markdown(f"**Bloque:** {row['block_code']} - {row['block_desc']}")
+        st.divider()
+
+        st.subheader("🧠 Guía de Codificación")
+        guidance, level = get_coding_guidance(row['code_4d'])
+        getattr(st, level)(guidance)
+        
+        related_codes_df = df[df['block_code'] == row['block_code']]
+        if len(related_codes_df) > 1:
+            with st.expander("Ver códigos relacionados para mayor precisión"):
+                for _, related_row in related_codes_df.iterrows():
+                    st.markdown(f"`{related_row['code_4d']}` – {related_row['description']}")
+        
+        if st.button("Limpiar selección", use_container_width=True):
+            st.session_state.selected_code_4d = None
+            st.rerun()
+    else:
+        st.info("Seleccione un código de la búsqueda o el explorador para ver sus detalles aquí.")
+
+# --- Interfaz Principal de Pestañas ---
+tab1, tab2 = st.tabs(["🔍 Búsqueda Inteligente", "🗺️ Explorador Clínico"])
+
+with tab1:
+    st.header("Búsqueda por Término, Sinónimo o Código")
+    search_query = st.text_input("Escriba para buscar:", placeholder="Ej: dolor de cabeza, cáncer de mama, I10X...")
+    
     if search_query:
         sq_norm = normalize_text(search_query)
-        
-        # Búsqueda por código tiene prioridad
         code_matches = df[df['code_4d'].str.startswith(sq_norm.upper())]
         
         if not code_matches.empty:
             result_df = code_matches.head(20)
         else:
-            # Búsqueda por descripción si no hay match de código
-            results = process.extract(sq_norm, df['desc_norm'], limit=20)
-            matched_descs = [r[0] for r in results]
-            result_df = df[df['desc_norm'].isin(matched_descs)]
+            results = process.extract(sq_norm, df['search_field'], limit=20)
+            matched_searches = [r[0] for r in results]
+            result_df = df[df['search_field'].isin(matched_searches)]
 
-        if not result_df.empty:
-            st.write("---")
-            st.subheader("Resultados encontrados:")
-            st.caption("Haga clic en un resultado para un análisis profundo.")
-            for _, row in result_df.iterrows():
-                if st.button(f"**{row['code_4d']}** – {row['description']}", key=row['code_4d'], use_container_width=True):
-                    st.session_state.selected_code_4d = row['code_4d']
-                    st.rerun() # Recarga la app para mostrar la vista de análisis
-        else:
-            st.warning("No se encontraron coincidencias. Intente con otros términos.")
+        st.caption(f"Mostrando hasta 20 resultados para '{search_query}'. Haga clic en uno para analizarlo.")
+        for _, row in result_df.iterrows():
+            if st.button(f"**{row['code_4d']}** – {row['description']}", key=row['code_4d'], use_container_width=True):
+                st.session_state.selected_code_4d = row['code_4d']
+                st.rerun()
 
-def render_focus_view(code_4d):
-    """Muestra el panel de análisis detallado para un código seleccionado."""
-    row = df[df['code_4d'] == code_4d].iloc[0]
-
-    # Botón para volver a la búsqueda
-    if st.button("⬅️ Volver a la búsqueda"):
-        st.session_state.selected_code_4d = None
-        st.rerun()
-
-    st.title(f"Análisis del Código: {row['code_4d']}")
-    st.header(row['description'])
-    st.divider()
-
-    # Jerarquía / "Migas de Pan"
-    st.markdown(f"**Ruta Jerárquica:** `{row['chapter_desc']}` ➡️ `{row['block_code']} - {row['block_desc']}`")
+with tab2:
+    st.header("Explorar por Estructura Clínica")
     
-    # Guía de Codificación
-    with st.container(border=True):
-        st.subheader("🧠 Guía de Codificación Inteligente")
-        guidance, level = get_coding_guidance(row['code_4d'])
-        getattr(st, level)(guidance)
+    # Paso 1: Filtrar por Área Clínica
+    area_list = sorted(df['clinical_area'].unique())
+    selected_area = st.selectbox("**Paso 1: Elija un Área Clínica**", area_list, index=None, placeholder="Filtre por especialidad médica...")
 
-    # Códigos Relacionados para mayor precisión
-    related_codes_df = df[df['block_code'] == row['block_code']]
-    if len(related_codes_df) > 1:
-        with st.expander(f"Ver otros códigos en el bloque '{row['block_code']}' para mejorar la precisión"):
-            for _, related_row in related_codes_df.iterrows():
-                if related_row['code_4d'] == code_4d:
-                    st.markdown(f"🔹 **{related_row['code_4d']} – {related_row['description']} (actualmente seleccionado)**")
-                else:
-                    st.markdown(f"🔸 `{related_row['code_4d']}` – {related_row['description']}")
-            st.caption("Considere usar uno de estos códigos si describe mejor la condición del paciente.")
+    if selected_area:
+        df_area = df[df['clinical_area'] == selected_area]
+        
+        # Paso 2: Filtrar por Bloque
+        block_options = {f"{code} – {desc[:70]}...": code for code, desc in df_area.groupby('block_code')['description'].first().items()}
+        selected_block_display = st.selectbox("**Paso 2: Elija una Subcategoría (Bloque)**", block_options.keys(), index=None, placeholder="Seleccione un grupo de diagnósticos...")
 
-# --- Flujo Principal de la Aplicación ---
-st.title("🧠 Workbench de Codificación CIE-10")
-st.markdown("Una herramienta intuitiva para analizar y entender la codificación clínica.")
-
-df = load_and_prepare_data()
-
-# Decidir qué vista mostrar
-if 'selected_code_4d' not in st.session_state:
-    st.session_state.selected_code_4d = None
-
-if st.session_state.selected_code_4d:
-    render_focus_view(st.session_state.selected_code_4d)
-else:
-    render_search_view()
+        if selected_block_display:
+            selected_block_code = block_options[selected_block_display]
+            df_block = df_area[df_area['block_code'] == selected_block_code]
+            
+            st.subheader(f"Códigos en el bloque '{selected_block_code}'")
+            st.caption("Haga clic en un código para analizarlo en el panel lateral.")
+            for _, row in df_block.iterrows():
+                if st.button(f"**{row['code_4d']}** – {row['description']}", key=f"exp_{row['code_4d']}", use_container_width=True):
+                    st.session_state.selected_code_4d = row['code_4d']
+                    st.rerun()
