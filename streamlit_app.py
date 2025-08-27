@@ -4,15 +4,10 @@ import unicodedata
 from thefuzz import process
 
 # --- Configuración de la Página ---
-st.set_page_config(
-    page_title="Asistente de Codificación CIE-10 (MINSAL)",
-    page_icon="🇨🇱",
-    layout="wide"
-)
+st.set_page_config(page_title="Asistente CIE-10 (MINSAL)", page_icon="🇨🇱", layout="wide")
 
-# --- Funciones de Lógica y Carga de Datos (con Caché) ---
+# --- Funciones de Lógica y Carga de Datos (Ahora ultrarrápida) ---
 def normalize_text(text: str) -> str:
-    """Limpia y normaliza texto para búsquedas robustas."""
     if not isinstance(text, str): return ""
     text = text.lower()
     text = unicodedata.normalize('NFKD', text)
@@ -21,65 +16,52 @@ def normalize_text(text: str) -> str:
 @st.cache_data
 def load_and_prepare_data():
     """
-    Carga y procesa la lista tabular oficial del MINSAL (.xls),
-    limpiándola para obtener solo los códigos codificables.
+    Carga los datos pre-procesados desde el archivo CSV local.
+    Este método es extremadamente rápido y confiable.
     """
-    # --- MEJORA: LECTURA DESDE LA FUENTE OFICIAL MINSAL ---
-    DATA_URL = "https://repositoriodeis.minsal.cl/ContenidoSitioWeb2020/uploads/2018/03/Lista-Tabular-CIE-10-1-1.xls"
+    try:
+        df = pd.read_csv("cie10_minsal_clean.csv")
+    except FileNotFoundError:
+        st.error("Error: No se encontró el archivo 'cie10_minsal_clean.csv'.")
+        st.info("Por favor, ejecute primero el script 'process_data.py' para generar este archivo.")
+        st.stop()
+
+    # --- Enriquecimiento de Datos ---
+    synonym_map = {
+        "dolor de cabeza": "cefalea", "infarto": "isquemia miocardio", "cancer": "neoplasia maligna tumor",
+        "corazon": "cardiaco cardiaca", "riñon": "renal", "pulmon": "neumo respiratorio",
+        "azucar": "diabetes mellitus", "presion alta": "hipertension",
+        "ataque cerebral": "accidente cerebrovascular acv", "hueso roto": "fractura"
+    }
     
-    with st.spinner("Cargando y procesando base de datos oficial MINSAL..."):
-        # Leer el archivo Excel, saltando las primeras filas que no son datos
-        df_raw = pd.read_excel(DATA_URL, engine='openpyxl', header=None, skiprows=5)
+    def expand_with_synonyms(text):
+        normalized_text = normalize_text(text)
+        for key, value in synonym_map.items():
+            if key in normalized_text:
+                normalized_text += f" {value}"
+        return normalized_text
+    
+    # El campo de búsqueda ahora incluye la descripción normalizada y los sinónimos
+    df['search_field_synonyms'] = df['search_field'].apply(expand_with_synonyms)
+    df['block_code'] = df['code'].str[:3]
+
+    clinical_area_map = {
+        "Infecciosas y Parasitarias": ['A', 'B'], "Oncología (Neoplasias)": ['C', 'D'],
+        "Endocrinología y Metabolismo": ['E'], "Salud Mental y Comportamiento": ['F'], "Neurología": ['G'],
+        "Oftalmología y Otorrinolaringología": ['H'], "Cardiología y Sist. Circulatorio": ['I'],
+        "Neumología y Sist. Respiratorio": ['J'], "Gastroenterología y Sist. Digestivo": ['K'], "Dermatología": ['L'],
+        "Traumatología y Sist. Musculoesquelético": ['M'], "Nefrología y Sist. Genitourinario": ['N'],
+        "Ginecología y Obstetricia": ['O'], "Pediatría y Perinatología": ['P'], "Genética y Malformaciones": ['Q'],
+        "Síntomas y Hallazgos Anormales": ['R'], "Traumatismos, Envenenamientos y Causas Externas": ['S', 'T', 'V', 'W', 'X', 'Y'],
+        "Factores de Salud y Contacto con Servicios": ['Z'], "Códigos Especiales": ['U']
+    }
         
-        # Seleccionar y renombrar las columnas relevantes (Código y Descripción)
-        df = df_raw[[0, 1]].copy()
-        df.columns = ['code', 'description']
-
-        # --- Limpieza de la Lista Tabular ---
-        # 1. Eliminar filas completamente vacías
-        df.dropna(subset=['code'], inplace=True)
-        # 2. Convertir códigos a string para poder manipularlos
-        df['code'] = df['code'].astype(str)
-        # 3. FILTRO CLAVE: Mantener solo los códigos válidos. Se eliminan los títulos de capítulos (ej: 'I') 
-        #    y los rangos de bloques (ej: 'A00-A09'). Los códigos válidos tienen 3 o más caracteres y no contienen guiones.
-        df = df[~df['code'].str.contains('-') & (df['code'].str.len() >= 3)]
-        df.reset_index(drop=True, inplace=True)
-
-        # --- Enriquecimiento de Datos (como en la versión anterior) ---
-        synonym_map = {
-            "dolor de cabeza": "cefalea", "infarto": "isquemia miocardio", "cancer": "neoplasia maligna tumor",
-            "corazon": "cardiaco cardiaca", "riñon": "renal", "pulmon": "neumo respiratorio",
-            "azucar": "diabetes mellitus", "presion alta": "hipertension",
-            "ataque cerebral": "accidente cerebrovascular acv", "hueso roto": "fractura"
-        }
-        def expand_with_synonyms(text):
-            normalized_text = normalize_text(text)
-            for key, value in synonym_map.items():
-                if key in normalized_text:
-                    normalized_text += f" {value}"
-            return normalized_text
-
-        df['code_4d'] = df['code'].str.replace('.', '', regex=False).apply(lambda x: x.ljust(4, 'X') if len(x) == 3 else x).str.slice(0, 4)
-        df['search_field'] = df['description'].apply(expand_with_synonyms)
-        df['block_code'] = df['code'].str[:3]
-
-        clinical_area_map = {
-            "Infecciosas y Parasitarias": ['A', 'B'], "Oncología (Neoplasias)": ['C', 'D'],
-            "Endocrinología y Metabolismo": ['E'], "Salud Mental y Comportamiento": ['F'], "Neurología": ['G'],
-            "Oftalmología y Otorrinolaringología": ['H'], "Cardiología y Sist. Circulatorio": ['I'],
-            "Neumología y Sist. Respiratorio": ['J'], "Gastroenterología y Sist. Digestivo": ['K'], "Dermatología": ['L'],
-            "Traumatología y Sist. Musculoesquelético": ['M'], "Nefrología y Sist. Genitourinario": ['N'],
-            "Ginecología y Obstetricia": ['O'], "Pediatría y Perinatología": ['P'], "Genética y Malformaciones": ['Q'],
-            "Síntomas y Hallazgos Anormales": ['R'], "Traumatismos, Envenenamientos y Causas Externas": ['S', 'T', 'V', 'W', 'X', 'Y'],
-            "Factores de Salud y Contacto con Servicios": ['Z'], "Códigos Especiales": ['U']
-        }
+    letter_to_area = {letter: area for area, letters in clinical_area_map.items() for letter in letters}
+    df['chapter_letter'] = df['code'].str[0]
+    df['clinical_area'] = df['chapter_letter'].map(letter_to_area).fillna("Área no especificada")
         
-        letter_to_area = {letter: area for area, letters in clinical_area_map.items() for letter in letters}
-        df['chapter_letter'] = df['code'].str[0]
-        df['clinical_area'] = df['chapter_letter'].map(letter_to_area).fillna("Área no especificada")
-        
-        block_descriptions = df.groupby('block_code')['description'].first()
-        df['block_desc'] = df['block_code'].map(block_descriptions)
+    block_descriptions = df.groupby('block_code')['description'].first()
+    df['block_desc'] = df['block_code'].map(block_descriptions)
     return df
 
 def get_coding_guidance(code):
@@ -146,7 +128,7 @@ with tab1:
         if not code_matches.empty:
             result_df = code_matches.head(20)
         else:
-            search_field_with_index = pd.Series(df['search_field'].values, index=df.index)
+            search_field_with_index = pd.Series(df['search_field_synonyms'].values, index=df.index)
             results = process.extract(sq_norm, search_field_with_index, limit=20)
             result_indices = [r[2] for r in results]
             result_df = df.loc[result_indices]
