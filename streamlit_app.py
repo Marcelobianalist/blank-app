@@ -100,7 +100,8 @@ with tab1:
             )
             selected = st.selectbox(
                 "Seleccione un código para ver detalles:",
-                [f"{row['code_4d']} - {row['description']}" for _, row in result_df.iterrows()]
+                [f"{row['code_4d']} - {row['description']}" for _, row in result_df.iterrows()],
+                key="code_selector"
             )
             if selected:
                 st.session_state.selected_code = selected.split(" - ")[0]
@@ -124,10 +125,17 @@ with tab1:
 # --- TAB 2: EXPLORADOR GUIADO ---
 with tab2:
     st.header("Explorador por Capítulos")
-    chapter = st.selectbox("Capítulo:", sorted(df['chapter_desc'].unique()))
+    chapter = st.selectbox("Capítulo:", sorted(df['chapter_desc'].unique()), key="chapter_selector")
     df_chapter = df[df['chapter_desc'] == chapter]
 
-    block = st.selectbox("Bloque (primeros 3 dígitos):", sorted(df_chapter['code'].str[:3].unique()))
+    block = st.selectbox("Bloque (primeros 3 dígitos):", sorted(df_chapter['code'].str[:3].unique()), key="block_selector")
     df_block = df_chapter[df_chapter['code'].str.startswith(block)]
 
     st.dataframe(df_block[['code_4d', 'description']], hide_index=True, use_container_width=True)
+
+    if not df_block.empty:
+        st.markdown("### Detalles de los códigos seleccionados:")
+        for _, row in df_block.iterrows():
+            st.markdown(f"- **Código:** {row['code_4d']} - **Descripción:** {row['description']}")
+    else:
+        st.warning("No hay códigos disponibles para el bloque seleccionado.")
