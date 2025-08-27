@@ -5,8 +5,8 @@ from thefuzz import process
 
 # --- Configuración de la Página ---
 st.set_page_config(
-    page_title="Asistente de Codificación CIE-10",
-    page_icon="💡",
+    page_title="Asistente de Codificación CIE-10 (MINSAL)",
+    page_icon="🇨🇱",
     layout="wide"
 )
 
@@ -20,20 +20,38 @@ def normalize_text(text: str) -> str:
 
 @st.cache_data
 def load_and_prepare_data():
-    """Carga, procesa y enriquece el catálogo CIE-10 con sinónimos y áreas clínicas."""
-    DATA_URL = "https://raw.githubusercontent.com/verasativa/CIE-10/refs/heads/master/codes.json"
-    with st.spinner("Cargando y optimizando el catálogo CIE-10..."):
-        df = pd.read_json(DATA_URL).dropna(subset=['code', 'description'])
-
-        # --- MEJORA: DICCIONARIO DE SINÓNIMOS ---
-        synonym_map = {
-            "dolor de cabeza": "cefalea", "infarto": "isquemia miocardio",
-            "cancer": "neoplasia maligna tumor", "corazon": "cardiaco cardiaca",
-            "riñon": "renal", "pulmon": "neumo respiratorio", "azucar": "diabetes mellitus",
-            "presion alta": "hipertension", "ataque cerebral": "accidente cerebrovascular acv",
-            "hueso roto": "fractura"
-        }
+    """
+    Carga y procesa la lista tabular oficial del MINSAL (.xls),
+    limpiándola para obtener solo los códigos codificables.
+    """
+    # --- MEJORA: LECTURA DESDE LA FUENTE OFICIAL MINSAL ---
+    DATA_URL = "https://repositoriodeis.minsal.cl/ContenidoSitioWeb2020/uploads/2018/03/Lista-Tabular-CIE-10-1-1.xls"
+    
+    with st.spinner("Cargando y procesando base de datos oficial MINSAL..."):
+        # Leer el archivo Excel, saltando las primeras filas que no son datos
+        df_raw = pd.read_excel(DATA_URL, engine='openpyxl', header=None, skiprows=5)
         
+        # Seleccionar y renombrar las columnas relevantes (Código y Descripción)
+        df = df_raw[[0, 1]].copy()
+        df.columns = ['code', 'description']
+
+        # --- Limpieza de la Lista Tabular ---
+        # 1. Eliminar filas completamente vacías
+        df.dropna(subset=['code'], inplace=True)
+        # 2. Convertir códigos a string para poder manipularlos
+        df['code'] = df['code'].astype(str)
+        # 3. FILTRO CLAVE: Mantener solo los códigos válidos. Se eliminan los títulos de capítulos (ej: 'I') 
+        #    y los rangos de bloques (ej: 'A00-A09'). Los códigos válidos tienen 3 o más caracteres y no contienen guiones.
+        df = df[~df['code'].str.contains('-') & (df['code'].str.len() >= 3)]
+        df.reset_index(drop=True, inplace=True)
+
+        # --- Enriquecimiento de Datos (como en la versión anterior) ---
+        synonym_map = {
+            "dolor de cabeza": "cefalea", "infarto": "isquemia miocardio", "cancer": "neoplasia maligna tumor",
+            "corazon": "cardiaco cardiaca", "riñon": "renal", "pulmon": "neumo respiratorio",
+            "azucar": "diabetes mellitus", "presion alta": "hipertension",
+            "ataque cerebral": "accidente cerebrovascular acv", "hueso roto": "fractura"
+        }
         def expand_with_synonyms(text):
             normalized_text = normalize_text(text)
             for key, value in synonym_map.items():
@@ -45,27 +63,15 @@ def load_and_prepare_data():
         df['search_field'] = df['description'].apply(expand_with_synonyms)
         df['block_code'] = df['code'].str[:3]
 
-        # --- MEJORA: FILTRO POR ÁREA CLÍNICA ---
         clinical_area_map = {
-            "Infecciosas y Parasitarias": ['A', 'B'],
-            "Oncología (Neoplasias)": ['C', 'D'],
-            "Endocrinología y Metabolismo": ['E'],
-            "Salud Mental y Comportamiento": ['F'],
-            "Neurología": ['G'],
-            "Oftalmología y Otorrinolaringología": ['H'],
-            "Cardiología y Sist. Circulatorio": ['I'],
-            "Neumología y Sist. Respiratorio": ['J'],
-            "Gastroenterología y Sist. Digestivo": ['K'],
-            "Dermatología": ['L'],
-            "Traumatología y Sist. Musculoesquelético": ['M'],
-            "Nefrología y Sist. Genitourinario": ['N'],
-            "Ginecología y Obstetricia": ['O'],
-            "Pediatría y Perinatología": ['P'],
-            "Genética y Malformaciones": ['Q'],
-            "Síntomas y Hallazgos Anormales": ['R'],
-            "Traumatismos, Envenenamientos y Causas Externas": ['S', 'T', 'V', 'W', 'X', 'Y'],
-            "Factores de Salud y Contacto con Servicios": ['Z'],
-            "Códigos Especiales": ['U']
+            "Infecciosas y Parasitarias": ['A', 'B'], "Oncología (Neoplasias)": ['C', 'D'],
+            "Endocrinología y Metabolismo": ['E'], "Salud Mental y Comportamiento": ['F'], "Neurología": ['G'],
+            "Oftalmología y Otorrinolaringología": ['H'], "Cardiología y Sist. Circulatorio": ['I'],
+            "Neumología y Sist. Respiratorio": ['J'], "Gastroenterología y Sist. Digestivo": ['K'], "Dermatología": ['L'],
+            "Traumatología y Sist. Musculoesquelético": ['M'], "Nefrología y Sist. Genitourinario": ['N'],
+            "Ginecología y Obstetricia": ['O'], "Pediatría y Perinatología": ['P'], "Genética y Malformaciones": ['Q'],
+            "Síntomas y Hallazgos Anormales": ['R'], "Traumatismos, Envenenamientos y Causas Externas": ['S', 'T', 'V', 'W', 'X', 'Y'],
+            "Factores de Salud y Contacto con Servicios": ['Z'], "Códigos Especiales": ['U']
         }
         
         letter_to_area = {letter: area for area, letters in clinical_area_map.items() for letter in letters}
@@ -77,23 +83,18 @@ def load_and_prepare_data():
     return df
 
 def get_coding_guidance(code):
-    # (Función sin cambios, se mantiene igual que la versión anterior)
+    # (Función sin cambios)
     if not code: return "", "info"
     chapter = code[0].upper()
-    if chapter in ['S', 'T']:
-        return "⚠️ **¡Atención!** Este es un código de **Lesión**. Es obligatorio añadir un código de **Causa Externa (V-Y)** que describa cómo ocurrió.", "error"
-    if chapter in ['V', 'W', 'X', 'Y']:
-        return "⚠️ **¡Atención!** Este es un código de **Causa Externa**. Debe usarse como código secundario junto a un código de **Lesión (S, T)**.", "error"
-    if chapter == 'R':
-        return "💡 **Consejo:** Los códigos 'R' son para síntomas o hallazgos sin un diagnóstico definitivo. Si se confirma una enfermedad, este código debe ser reemplazado.", "warning"
-    if chapter == 'Z':
-        return "💡 **Consejo:** Los códigos 'Z' no son enfermedades. Describen situaciones como controles, seguimientos o factores de riesgo.", "info"
-    if chapter == 'C' or (chapter == 'D' and len(code) > 2 and code[1:3].isdigit() and int(code[1:3]) <= 48):
-        return "💡 **Consejo:** Para neoplasias, es crucial especificar la localización y el comportamiento (maligno, benigno, etc.).", "info"
+    if chapter in ['S', 'T']: return "⚠️ **¡Atención!** Este es un código de **Lesión**. Es obligatorio añadir un código de **Causa Externa (V-Y)** que describa cómo ocurrió.", "error"
+    if chapter in ['V', 'W', 'X', 'Y']: return "⚠️ **¡Atención!** Este es un código de **Causa Externa**. Debe usarse como código secundario junto a un código de **Lesión (S, T)**.", "error"
+    if chapter == 'R': return "💡 **Consejo:** Los códigos 'R' son para síntomas o hallazgos sin un diagnóstico definitivo. Si se confirma una enfermedad, este código debe ser reemplazado.", "warning"
+    if chapter == 'Z': return "💡 **Consejo:** Los códigos 'Z' no son enfermedades. Describen situaciones como controles, seguimientos o factores de riesgo.", "info"
+    if chapter == 'C' or (chapter == 'D' and len(code) > 2 and code[1:3].isdigit() and int(code[1:3]) <= 48): return "💡 **Consejo:** Para neoplasias, es crucial especificar la localización y el comportamiento (maligno, benigno, etc.).", "info"
     return "✅ **Guía General:** Asegúrese de que este código sea el más específico posible según la documentación clínica.", "success"
 
 # --- Inicialización de la Aplicación ---
-st.title("💡 Asistente de Codificación CIE-10")
+st.title("🇨🇱 Asistente de Codificación CIE-10 (Base MINSAL)")
 st.markdown("Busque con sinónimos o explore por área clínica para encontrar el código correcto.")
 
 df = load_and_prepare_data()
@@ -101,7 +102,7 @@ df = load_and_prepare_data()
 if 'selected_code_4d' not in st.session_state:
     st.session_state.selected_code_4d = None
 
-# --- Panel de Detalles en la Barra Lateral (Siempre visible) ---
+# --- Panel de Detalles en la Barra Lateral ---
 with st.sidebar:
     st.header("📋 Panel de Análisis")
     if st.session_state.selected_code_4d:
@@ -145,9 +146,10 @@ with tab1:
         if not code_matches.empty:
             result_df = code_matches.head(20)
         else:
-            results = process.extract(sq_norm, df['search_field'], limit=20)
-            matched_searches = [r[0] for r in results]
-            result_df = df[df['search_field'].isin(matched_searches)]
+            search_field_with_index = pd.Series(df['search_field'].values, index=df.index)
+            results = process.extract(sq_norm, search_field_with_index, limit=20)
+            result_indices = [r[2] for r in results]
+            result_df = df.loc[result_indices]
 
         st.caption(f"Mostrando hasta 20 resultados para '{search_query}'. Haga clic en uno para analizarlo.")
         for _, row in result_df.iterrows():
@@ -158,14 +160,11 @@ with tab1:
 with tab2:
     st.header("Explorar por Estructura Clínica")
     
-    # Paso 1: Filtrar por Área Clínica
     area_list = sorted(df['clinical_area'].unique())
     selected_area = st.selectbox("**Paso 1: Elija un Área Clínica**", area_list, index=None, placeholder="Filtre por especialidad médica...")
 
     if selected_area:
         df_area = df[df['clinical_area'] == selected_area]
-        
-        # Paso 2: Filtrar por Bloque
         block_options = {f"{code} – {desc[:70]}...": code for code, desc in df_area.groupby('block_code')['description'].first().items()}
         selected_block_display = st.selectbox("**Paso 2: Elija una Subcategoría (Bloque)**", block_options.keys(), index=None, placeholder="Seleccione un grupo de diagnósticos...")
 
