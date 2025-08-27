@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-import time # Importamos time para ver los tiempos
+import re
 
 # --- Configuración de la Página de Streamlit ---
 st.set_page_config(
@@ -12,61 +12,55 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- Funciones de Carga y Procesamiento ---
-
-# --- PUNTO DE CONTROL 1: El script ha comenzado ---
-st.info("Iniciando aplicación... Por favor espere.")
+# --- Funciones de Carga y Procesamiento (con caché para eficiencia) ---
 
 @st.cache_resource
 def load_model():
-    st.info("Paso 1/4: Cargando modelo de IA (puede tardar si es la primera vez)...")
-    model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-    st.success("Paso 1/4: ¡Modelo de IA cargado en memoria!")
-    return model
+    """Carga el modelo de embedding una sola vez."""
+    return SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
 
 @st.cache_data
 def load_and_prepare_data():
-    st.info("Paso 2/4: Descargando catálogo CIE-10 desde la web...")
-    DATA_URL = "https://raw.githubusercontent.com/gpalacin/misc/main/datasets/cie10_codigos_diagnosticos.csv"
-    try:
-        df = pd.read_csv(DATA_URL)
-    except Exception as e:
-        st.error(f"Error al cargar los datos desde la fuente online: {e}")
-        st.stop()
+    """Carga los datos de la CIE-10 desde una URL y los prepara."""
+    # <--- CAMBIO 1: Nueva URL del archivo de datos. Esta está activa.
+    DATA_URL = "https://raw.githubusercontent.com/esss-cancerdemama/cie10/master/cie10.csv"
     
+    with st.spinner("Cargando catálogo CIE-10 desde la web..."):
+        try:
+            df = pd.read_csv(DATA_URL)
+        except Exception as e:
+            st.error(f"Error al cargar los datos desde la fuente online: {e}")
+            st.info("Por favor, revise su conexión a internet. Si el problema persiste, la fuente de datos puede estar temporalmente inaccesible.")
+            st.stop()
+    
+    # <--- CAMBIO 2: Renombrar columnas para que coincidan con el resto del código.
+    # El nuevo archivo usa 'clave' y 'descripcion_es'. Los renombramos a 'code' y 'description'.
+    df.rename(columns={'clave': 'code', 'descripcion_es': 'description'}, inplace=True)
+        
+    # Limpieza básica
     df.dropna(subset=['code', 'description'], inplace=True)
     df = df[df['description'].str.strip() != '']
+
+    # --- Creación del código de 4 dígitos (convención chilena) ---
     df['code_4d'] = df['code'].str.replace('.', '', regex=False)
     df['code_4d'] = df['code_4d'].apply(lambda x: x.ljust(4, 'X') if len(x) == 3 else x).str.slice(0, 4)
     
-    st.success("Paso 2/4: ¡Catálogo CIE-10 descargado y procesado!")
     return df
 
 @st.cache_data
 def create_embeddings(_model, descriptions):
-    st.info("Paso 3/4: Creando embeddings de IA (este es el paso más largo, puede tardar varios minutos)...")
-    start_time = time.time()
-    
-    # Usaremos un placeholder para mostrar el progreso en la app
-    progress_bar = st.progress(0, text="Procesando descripciones...")
-    
-    embeddings = _model.encode(descriptions, convert_to_tensor=True, show_progress_bar=False) # show_progress_bar=False para no duplicar en terminal
-    
-    # Actualizamos la barra de progreso manualmente para dar feedback visual
-    progress_bar.progress(100, text="Embeddings creados.")
-    
-    end_time = time.time()
-    st.success(f"Paso 3/4: ¡Embeddings creados en {end_time - start_time:.2f} segundos!")
-    time.sleep(2) # Pausa para que el usuario pueda leer el mensaje
-    progress_bar.empty() # Limpiar la barra de progreso
+    """Crea los embeddings para las descripciones de la CIE-10."""
+    with st.spinner("Inicializando el motor de IA... (esto puede tardar un momento la primera vez)"):
+        embeddings = _model.encode(descriptions, convert_to_tensor=True, show_progress_bar=True)
     return embeddings.cpu().numpy()
 
+# --- Función de Orientación para Codificación (sin cambios) ---
 def get_coding_guidance(code):
-    # ... (el resto de la función es igual, no es necesario copiarla de nuevo) ...
+    """Proporciona orientación específica basada en el capítulo de la CIE-10."""
     chapter = code[0].upper()
     guidance = []
     if chapter in ['A', 'B']: guidance.append("**Guía:** Para enfermedades infecciosas, considere codificar también el organismo causal si la CIE-10 lo indica.")
-    elif chapter == 'C' or (chapter == 'D' and int(code[1:3]) <= 48): guidance.append("**Guía:** Para neoplasias, especifique el comportamiento (maligno, benigno, in situ) y la localización. Use códigos de la sección Z para historial personal de neoplasia.")
+    elif chapter == 'C' or (chapter == 'D' and len(code) > 1 and code[1:3].isdigit() and int(code[1:3]) <= 48): guidance.append("**Guía:** Para neoplasias, especifique el comportamiento (maligno, benigno, in situ) y la localización. Use códigos de la sección Z para historial personal de neoplasia.")
     elif chapter == 'F': guidance.append("**Guía:** Para trastornos mentales, sea lo más específico posible. Considere el estado (ej. en remisión), la severidad y si es un episodio único o recurrente.")
     elif chapter == 'I': guidance.append("**Guía:** Para enfermedades circulatorias, especifique la cronicidad (agudo vs. crónico). Para hipertensión, considere si hay relación causal con enfermedades renales o cardíacas.")
     elif chapter == 'J': guidance.append("**Guía:** Para enfermedades respiratorias, distinga entre agudo y crónico. Si hay una infección, codifique el organismo si es conocido.")
@@ -74,25 +68,19 @@ def get_coding_guidance(code):
     elif chapter == 'R': guidance.append("**Guía:** Los códigos 'R' (síntomas y signos) son para casos no diagnosticados. Si se llega a un diagnóstico definitivo, debe reemplazarse por el código de esa enfermedad.")
     elif chapter in ['S', 'T']: guidance.append("**Guía:** Para lesiones y traumatismos, es crucial incluir la causa externa (códigos V, W, X, Y). Especifique si es un encuentro inicial, subsecuente o una secuela.")
     elif chapter == 'Z': guidance.append("**Guía:** Los códigos 'Z' no son enfermedades, sino factores que influyen en el estado de salud (ej. controles, historial). Úselos como código principal o secundario según corresponda.")
-    else: guidance.append("**Guía General:** Revise la documentación clínica para asegurar que el código seleccionado refleje con la máxima precisión el diagnóstico. Considere si se necesitan códigos adicionales para manifestaciones o comorbildades.")
+    else: guidance.append("**Guía General:** Revise la documentación clínica para asegurar que el código seleccionado refleje con la máxima precisión el diagnóstico. Considere si se necesitan códigos adicionales para manifestaciones o comorbilidades.")
     return "\n".join(guidance)
-    
-# --- Ejecución y Carga ---
-model = load_model()
-df = load_and_prepare_data()
-embeddings = create_embeddings(model, df['description'].tolist())
 
-# --- PUNTO DE CONTROL 2: La carga ha finalizado, ahora se dibuja la interfaz ---
-st.info("Paso 4/4: Inicialización completa. ¡La aplicación está lista!")
-time.sleep(1) # Pequeña pausa
-st.experimental_rerun() # Esto recargará la app para limpiar los mensajes de carga
-
-# --- Interfaz Principal de la Aplicación ---
+# --- Interfaz Principal de la Aplicación (sin cambios) ---
 st.title("🩺 Asistente Inteligente de Codificación CIE-10")
 st.markdown("""
 Esta herramienta utiliza un modelo de lenguaje para recomendar los códigos de diagnóstico CIE-10 más probables basados en una descripción clínica.
 **Nota:** Es una ayuda y no reemplaza el juicio clínico profesional ni las normativas locales de codificación.
 """)
+
+model = load_model()
+df = load_and_prepare_data()
+embeddings = create_embeddings(model, df['description'].tolist())
 
 with st.container(border=True):
     col1, col2 = st.columns([3, 1])
