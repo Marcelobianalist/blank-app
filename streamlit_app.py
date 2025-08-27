@@ -3,16 +3,13 @@ import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+from thefuzz import process, fuzz
 import re
 
-# --- Configuración de la Página de Streamlit ---
-st.set_page_config(
-    page_title="Asistente de Codificación CIE-10",
-    page_icon="🩺",
-    layout="wide"
-)
+# --- Configuración de la Página ---
+st.set_page_config(page_title="Asistente CIE-10", page_icon="🩺", layout="wide")
 
-# --- Funciones de Carga y Procesamiento (con caché para eficiencia) ---
+# --- Funciones de Carga y Procesamiento (Caché) ---
 
 @st.cache_resource
 def load_model():
@@ -21,136 +18,131 @@ def load_model():
 @st.cache_data
 def load_and_prepare_data():
     DATA_URL = "https://raw.githubusercontent.com/verasativa/CIE-10/refs/heads/master/codes.json"
-    with st.spinner("Cargando catálogo CIE-10 (JSON) desde la web..."):
-        try:
-            df = pd.read_json(DATA_URL)
-        except Exception as e:
-            st.error(f"Error al cargar los datos desde la fuente online: {e}")
-            st.stop()
-    
-    df.dropna(subset=['code', 'description'], inplace=True)
-    df = df[df['description'].str.strip() != '']
-    # Pre-procesamiento para la búsqueda por palabras clave
-    df['description_lower'] = df['description'].str.lower()
-    df['code_4d'] = df['code'].str.replace('.', '', regex=False)
-    df['code_4d'] = df['code_4d'].apply(lambda x: x.ljust(4, 'X') if len(x) == 3 else x).str.slice(0, 4)
+    with st.spinner("Cargando catálogo CIE-10..."):
+        df = pd.read_json(DATA_URL).dropna(subset=['code', 'description'])
+        df['description_lower'] = df['description'].str.lower()
+        df['code_4d'] = df['code'].str.replace('.', '', regex=False).apply(lambda x: x.ljust(4, 'X') if len(x) == 3 else x).str.slice(0, 4)
     return df
 
 @st.cache_data
 def create_embeddings(_model, descriptions):
-    with st.spinner("Inicializando el motor de IA... (esto puede tardar un momento la primera vez)"):
-        embeddings = _model.encode(descriptions, convert_to_tensor=True, show_progress_bar=True)
-    return embeddings.cpu().numpy()
+    with st.spinner("Inicializando motor de IA..."):
+        return _model.encode(descriptions, convert_to_tensor=True, show_progress_bar=True).cpu().numpy()
 
-# --- Función de Alertas (sin cambios) ---
-def show_complex_coding_alert(query):
+# --- Lógica de Búsqueda Híbrida y Flexible ---
+def hybrid_search(query, df, embeddings, model, num_results=10, boost=0.3):
     query_lower = query.lower()
-    alerts = {
-        ("suicidio", "autoinflingida", "autolesión", "auto inflingida"): """
-        ### ⚠️ Alerta de Codificación Compleja: Lesión Autoinfligida
-        Un **intento de suicidio** o **lesión autoinfligida** requiere al menos **DOS** códigos:
-        1.  **Código de Lesión (Capítulo XIX: S00-T98):** Describe el daño físico (ej: `S610` para herida de muñeca).
-        2.  **Código de Causa Externa (Capítulo XX: X60-X84):** Describe la intencionalidad y el método (ej: `X78X` para objeto cortante).
-        """,
-        ("accidente", "caída", "golpe", "atropello", "quemadura", "mordedura"): """
-        ### ⚠️ Alerta de Codificación Compleja: Traumatismo y Lesiones
-        Un **traumatismo** o **lesión accidental** requiere al menos **DOS** códigos:
-        1.  **Código de Lesión (Capítulo XIX: S00-T98):** Describe el daño físico (ej: `S826` para fractura de peroné).
-        2.  **Código de Causa Externa (Capítulo XX: V01-Y98):** Describe el evento que causó la lesión (ej: `W19X` para caída no especificada).
-        """
-    }
-    for keywords, message in alerts.items():
-        if any(keyword in query_lower for keyword in keywords):
-            st.warning(message, icon="⚠️")
-            return
-
-# --- Función de Orientación (sin cambios) ---
-def get_coding_guidance(code):
-    if not code: return ""
-    chapter = code[0].upper()
-    guidance = []
-    is_neoplasia_range = (chapter == 'D' and len(code) > 2 and code[1:3].isdigit() and 0 <= int(code[1:3]) <= 48)
-    if chapter in ['A', 'B']: guidance.append("**Guía:** Para enfermedades infecciosas, considere codificar también el organismo causal si la CIE-10 lo indica.")
-    elif chapter == 'C' or is_neoplasia_range: guidance.append("**Guía:** Para neoplasias, especifique el comportamiento (maligno, benigno, in situ) y la localización.")
-    elif chapter in ['S', 'T']: guidance.append("**Guía de Lesión:** Este es un código de lesión. **Recuerde añadir un código de Causa Externa (V01-Y98)** para describir cómo y por qué ocurrió la lesión.")
-    elif chapter in ['V', 'W', 'X', 'Y']: guidance.append("**Guía de Causa Externa:** Este es un código de causa externa. **Asegúrese de tener también un código de Lesión (S00-T98)** que describa el daño físico.")
-    else: guidance.append("**Guía General:** Revise la documentación clínica para asegurar que el código seleccionado refleje con la máxima precisión el diagnóstico.")
-    return "\n".join(guidance)
     
-# --- Interfaz Principal de la Aplicación ---
-st.title("🩺 Asistente Inteligente de Codificación CIE-10")
-st.markdown("""
-Esta herramienta utiliza una **búsqueda híbrida (semántica + palabras clave)** para recomendar los códigos CIE-10 más relevantes.
-""")
+    # 1. Búsqueda Semántica
+    query_embedding = model.encode([query], convert_to_tensor=True).cpu().numpy()
+    semantic_scores = cosine_similarity(query_embedding, embeddings)[0]
+    
+    # 2. Búsqueda por Palabras Clave Flexible (Fuzzy Search)
+    # Encuentra la mejor coincidencia para la consulta completa en las descripciones
+    fuzzy_scores = df['description_lower'].apply(lambda x: fuzz.partial_ratio(query_lower, x) / 100.0)
+    
+    # 3. Combinación de puntuaciones
+    combined_scores = (semantic_scores * 0.6) + (fuzzy_scores * 0.4)
+    
+    # 4. Impulso a coincidencias directas
+    keywords = [word for word in re.split(r'\W+', query_lower) if word]
+    keyword_mask = pd.Series(True, index=df.index)
+    if keywords:
+        for keyword in keywords:
+            keyword_mask &= df['description_lower'].str.contains(keyword, na=False)
+        combined_scores[keyword_mask] += boost
+    
+    top_indices = np.argsort(combined_scores)[-num_results:][::-1]
+    return top_indices, combined_scores
 
+# --- Lógica del Asistente de Codificación Guiada ---
+def guided_coder_ui():
+    st.header("🔍 Asistente de Codificación Guiada")
+    flow_type = st.session_state.get('flow_type')
+
+    if flow_type == 'autolesion':
+        st.info("Detectamos un escenario de **Lesión Autoinfligida**. Por favor, complete los siguientes pasos para una codificación precisa.")
+        
+        # Opciones para el asistente
+        metodos = {"No especificado": "X84X", "Objeto Cortante": "X78X", "Ahorcamiento": "X70X", "Envenenamiento (Drogas/Medicamentos)": "X64X", "Salto desde altura": "X80X", "Disparo de arma de fuego": "X74X"}
+        zonas = ["No especificado", "Cabeza", "Cuello", "Tórax", "Abdomen/Espalda/Pelvis", "Hombro/Brazo", "Muñeca/Mano", "Cadera/Muslo", "Pierna/Tobillo/Pie"]
+
+        # Paso 1: Método
+        st.session_state.metodo = st.selectbox("Paso 1: Seleccione el método utilizado:", options=list(metodos.keys()), key="metodo_select")
+        
+        # Paso 2: Zona
+        st.session_state.zona = st.selectbox("Paso 2: Seleccione la zona principal de la lesión:", options=zonas, key="zona_select")
+
+        if st.button("Generar Códigos Recomendados", type="primary"):
+            st.session_state.show_guided_results = True
+
+    if st.session_state.get('show_guided_results'):
+        st.subheader("Resultados de la Codificación Guiada")
+        
+        # Lógica para mostrar resultados
+        st.success("Basado en sus selecciones, la codificación precisa requiere al menos dos códigos:")
+        
+        # Código de Causa Externa
+        codigo_causa = metodos[st.session_state.metodo]
+        desc_causa_df = df[df['code_4d'].str.startswith(codigo_causa[:3])]
+        desc_causa = desc_causa_df['description'].iloc[0] if not desc_causa_df.empty else "Descripción no encontrada"
+        st.markdown(f"#### 1. Causa Externa (Intencionalidad y Método)")
+        with st.container(border=True):
+            st.markdown(f"**Código:** `{codigo_causa}`")
+            st.markdown(f"**Descripción:** {desc_causa}")
+
+        # Código de Lesión
+        st.markdown(f"#### 2. Lesión Física (Daño Corporal)")
+        st.markdown(f"Use el buscador principal con términos como **'herida {st.session_state.zona}'** o **'fractura {st.session_state.zona}'** para encontrar el código de lesión más específico (Capítulos S y T).")
+        with st.expander("Ver ejemplos de códigos de lesión para la zona seleccionada"):
+            query_lesion = f"herida traumatismo {st.session_state.zona}".lower()
+            if st.session_state.zona == "No especificado":
+                query_lesion = "traumatismo de sitio no especificado"
+            
+            indices, scores = hybrid_search(query_lesion, df, embeddings, model, num_results=3)
+            for idx in indices:
+                st.write(f"`{df.iloc[idx]['code_4d']}` - {df.iloc[idx]['description']}")
+
+    if st.button("↩️ Iniciar Nueva Búsqueda"):
+        # Limpiar el estado para volver al buscador principal
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+# --- Inicialización y Flujo Principal de la App ---
+if 'flow_type' not in st.session_state:
+    st.session_state.flow_type = None
+
+# Cargar datos y modelo
 model = load_model()
 df = load_and_prepare_data()
 embeddings = create_embeddings(model, df['description'].tolist())
 
-with st.container(border=True):
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        user_query = st.text_area("Ingrese la descripción clínica, síntoma o diagnóstico:", height=100, placeholder="Ej: intento de suicidio, cortes en muñeca")
-    with col2:
-        num_results = st.slider("Resultados a mostrar:", min_value=1, max_value=10, value=5)
-        search_button = st.button("Buscar Diagnósticos", type="primary", use_container_width=True)
+# Título
+st.title("🩺 Asistente Inteligente de Codificación CIE-10")
 
-# --- LÓGICA DE BÚSQUEDA HÍBRIDA MEJORADA ---
-if search_button and user_query:
-    show_complex_coding_alert(user_query)
+# Decidir qué UI mostrar: el buscador principal o el asistente guiado
+if st.session_state.flow_type:
+    guided_coder_ui()
+else:
+    st.markdown("Use la búsqueda para encontrar códigos o active el **Asistente Guiado** con términos como `suicidio` o `accidente`.")
+    with st.container(border=True):
+        user_query = st.text_area("Ingrese la descripción clínica:", placeholder="Ej: intento de suicidio cortes en muñeca")
+        search_button = st.button("Buscar Diagnósticos", type="primary")
 
-    with st.spinner("Realizando búsqueda híbrida inteligente..."):
-        # --- 1. Búsqueda Semántica (como antes) ---
-        query_embedding = model.encode([user_query], convert_to_tensor=True).cpu().numpy()
-        semantic_similarities = cosine_similarity(query_embedding, embeddings)[0]
-
-        # --- 2. Búsqueda por Palabras Clave ---
-        # Dividir la consulta en palabras y buscar si *todas* están presentes
-        query_keywords = [word for word in re.split(r'\W+', user_query.lower()) if word]
-        keyword_mask = pd.Series(True, index=df.index)
-        for keyword in query_keywords:
-            keyword_mask &= df['description_lower'].str.contains(keyword, na=False)
+    if search_button and user_query:
+        query_lower = user_query.lower()
         
-        # --- 3. Combinación de Puntuaciones (Lógica Híbrida) ---
-        KEYWORD_BOOST = 0.2  # Factor de impulso para las coincidencias de palabras clave
+        # Detección de palabras clave para iniciar el Asistente Guiado
+        if any(keyword in query_lower for keyword in ["suicidio", "autoinflingida", "autolesión"]):
+            st.session_state.flow_type = 'autolesion'
+            st.rerun() # Recargar la app para mostrar la UI del asistente
+        # Aquí se pueden añadir más `elif` para otros flujos (ej: accidentes)
         
-        # Copiamos las puntuaciones semánticas
-        combined_scores = semantic_similarities.copy()
-        
-        # Aplicamos el impulso a las filas que coinciden con las palabras clave
-        combined_scores[keyword_mask] += KEYWORD_BOOST
-        
-        # Nos aseguramos de que ninguna puntuación supere 1.0
-        combined_scores = np.clip(combined_scores, 0, 1)
-
-        # --- 4. Obtener los resultados con la nueva puntuación combinada ---
-        top_indices = np.argsort(combined_scores)[-num_results:][::-1]
-
-    st.subheader(f"Top {num_results} diagnósticos recomendados (Búsqueda Híbrida):")
-    st.info("Resultados que contienen sus palabras clave exactas reciben un impulso en relevancia.")
-    
-    for i, idx in enumerate(top_indices):
-        code = df.iloc[idx]['code_4d']
-        description = df.iloc[idx]['description']
-        final_score = combined_scores[idx]
-        
-        # Añadir indicador visual si hubo coincidencia de palabra clave
-        is_keyword_match = keyword_mask.iloc[idx]
-        
-        with st.container(border=True):
-            title = f"**{i+1}. {code}** - {description}"
-            if is_keyword_match:
-                st.markdown(f"#### {title} <span style='color: #28a745;'>✓ Coincidencia de palabra clave</span>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"#### {title}")
-                
-            st.progress(float(final_score), text=f"Relevancia: {final_score:.2%}")
-            guidance = get_coding_guidance(code)
-            if guidance:
-                st.info(guidance)
-
-elif search_button and not user_query:
-    st.warning("Por favor, ingrese una descripción clínica para buscar.")
-
-st.markdown("---")
-st.markdown("Desarrollado como una herramienta de apoyo para profesionales de la salud.")
+        else: # Búsqueda normal híbrida
+            indices, scores = hybrid_search(user_query, df, embeddings, model, num_results=5)
+            st.subheader("Resultados de la Búsqueda Híbrida")
+            for idx in indices:
+                with st.container(border=True):
+                    st.markdown(f"**`{df.iloc[idx]['code_4d']}`** - {df.iloc[idx]['description']}")
+                    st.progress(float(scores[idx]), text=f"Relevancia: {scores[idx]:.2%}")
